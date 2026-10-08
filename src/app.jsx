@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
 import TextInput from "ink-text-input";
 import { fetchRepos } from "./github.js";
-import { group, scan } from "./scan.js";
+import { group, isNoreply, scan } from "./scan.js";
 import { copy, openUrl } from "./system.js";
 
 const PAGE = 10;
@@ -264,7 +264,7 @@ function Detail({ username, item, onBack }) {
   );
 }
 
-function Results({ username, result }) {
+function Results({ username, result, initialShowNoreply }) {
   const { rows, columns } = useWindowSize();
   const [mode, setMode] = useState("pair");
   const [limit, setLimit] = useState(PAGE);
@@ -273,9 +273,15 @@ function Results({ username, result }) {
   const [searching, setSearching] = useState(false);
   const [flash, setFlash] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [showNoreply, setShowNoreply] = useState(initialShowNoreply);
   const [quitting, quit] = useQuit();
 
-  const grouped = useMemo(() => group(result.identities, mode), [result, mode]);
+  const real = useMemo(() => result.identities.filter((i) => !isNoreply(i.email)), [result]);
+  const hiddenCount = result.identities.length - real.length;
+  const grouped = useMemo(
+    () => group(showNoreply ? result.identities : real, mode),
+    [result, real, mode, showNoreply],
+  );
   const filtered = useMemo(() => {
     const ranked = grouped.map((g, i) => ({ ...g, rank: i + 1 }));
     const q = query.toLowerCase();
@@ -340,7 +346,11 @@ function Results({ username, result }) {
         setMode(MODES[i % MODES.length]);
         setCursor(0);
       } else if (input === "/") setSearching(true);
-      else if (input === "c" && selected) {
+      else if (input === "n") {
+        setShowNoreply(!showNoreply);
+        setCursor(0);
+        setFlash(`${showNoreply ? "Hiding" : "Showing"} ${num(hiddenCount)} GitHub noreply identities`);
+      } else if (input === "c" && selected) {
         copy(selected.emails[0]);
         setFlash(`Copied ${selected.emails[0]}`);
       }
@@ -365,8 +375,9 @@ function Results({ username, result }) {
         <Text bold>{username}</Text>
         <Text dimColor>
           {"  "}
-          {num(result.identities.length)} identities · {num(result.commits)} commits · {num(result.repos)}{" "}
-          repos · {duration(result.duration)}
+          {num(showNoreply ? result.identities.length : real.length)} identities
+          {!showNoreply && hiddenCount > 0 ? ` (${num(hiddenCount)} noreply hidden)` : ""} ·{" "}
+          {num(result.commits)} commits · {num(result.repos)} repos · {duration(result.duration)}
         </Text>
       </Text>
       <Text> </Text>
@@ -457,14 +468,15 @@ function Results({ username, result }) {
           <Text dimColor wrap="truncate-end">
             <Text bold>↑↓</Text> move · <Text bold>enter</Text> repos · <Text bold>space</Text> more ·{" "}
             <Text bold>a</Text> all · <Text bold>tab</Text> group · <Text bold>/</Text> search ·{" "}
-            <Text bold>c</Text> copy email · <Text bold>q</Text> quit
+            <Text bold>n</Text> {showNoreply ? "hide" : "show"} noreply · <Text bold>c</Text> copy email ·{" "}
+            <Text bold>q</Text> quit
           </Text>
         ))}
     </Box>
   );
 }
 
-export default function App({ initialUsername, includeForks, scanOptions, signal }) {
+export default function App({ initialUsername, includeForks, showNoreply, scanOptions, signal }) {
   const { exit } = useApp();
   const [username, setUsername] = useState(initialUsername ?? "");
   const [phase, setPhase] = useState(initialUsername ? "fetching" : "input");
@@ -548,7 +560,9 @@ export default function App({ initialUsername, includeForks, scanOptions, signal
       )}
       {phase === "fetching" && <Fetching username={username} found={found} />}
       {phase === "cloning" && handle && <Cloning username={username} state={handle.state} />}
-      {phase === "results" && <Results username={username} result={result} />}
+      {phase === "results" && (
+        <Results username={username} result={result} initialShowNoreply={showNoreply} />
+      )}
       {phase === "empty" && <Text dimColor>No commits found.</Text>}
       {phase === "error" && <Text color="red">✗ {error}</Text>}
       {phase === "cancelled" && <Text color="yellow">✗ Cancelled</Text>}

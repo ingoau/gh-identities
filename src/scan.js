@@ -171,6 +171,10 @@ export function scan(repos, { jobs = 8, signal, trailers = true, skipTrailers = 
   return { state, promise };
 }
 
+// GitHub's generated addresses: web commits/merges and the per-user privacy address
+const NOREPLY = /^noreply@github\.com$|@users\.noreply\.github\.com$/i;
+export const isNoreply = (email) => NOREPLY.test(email);
+
 const byCount = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
 // Collapse name+email pairs into groups keyed by email or by name.
