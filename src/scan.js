@@ -31,10 +31,30 @@ function git(args, { cwd, signal, onStderrLine } = {}) {
 }
 
 const PROGRESS = /^(?:remote: )?([A-Za-z ]+?):\s+(\d+)%/;
+const TRAILER_PERSON = /^"?(.*?)"?\s*<([^<>\s]+@[^<>\s]+)>$/;
+// Trailers that name people without them having contributed to the commit
+const NON_CONTRIBUTOR_TRAILERS = new Set(["cc", "bcc", "to"]);
+
+// "Co-authored-by: Name <email>" → ["co-authored-by", "Name", "email"]
+function parseTrailers(raw, skip) {
+  const people = [];
+  for (const trailer of raw.split("\x1f")) {
+    const colon = trailer.indexOf(":");
+    if (colon < 1) continue;
+    const key = trailer.slice(0, colon).trim().toLowerCase();
+    if (NON_CONTRIBUTOR_TRAILERS.has(key) || skip.has(key) || skip.has(key.replace(/-by$/, ""))) continue;
+    const m = TRAILER_PERSON.exec(trailer.slice(colon + 1).trim());
+    if (m) people.push([key, m[1], m[2]]);
+  }
+  return people;
+}
 
 // Clones every repo (bare, no trees) with a worker pool and tallies commit identities.
 // `state` is mutated live so a UI can poll it; `promise` resolves with the final result.
-export function scan(repos, { jobs = 8, signal } = {}) {
+// Trailers naming a person (Co-authored-by, Signed-off-by, …) are counted unless `trailers` is false;
+// `skipTrailers` holds lowercase keys to ignore, with or without the "-by" suffix.
+export function scan(repos, { jobs = 8, signal, trailers = true, skipTrailers = [] } = {}) {
+  const skip = new Set(skipTrailers.map((t) => t.toLowerCase()));
   const dir = mkdtempSync(join(tmpdir(), "gh-identities-"));
   const remove = (path) => {
     try {
@@ -57,12 +77,18 @@ export function scan(repos, { jobs = 8, signal } = {}) {
   const seen = new Set();
   let next = 0;
 
-  const add = (name, email, repo) => {
-    const key = `${name}\0${email}`;
-    let entry = state.identities.get(key);
-    if (!entry) state.identities.set(key, (entry = { name, email, commits: 0, repos: new Map() }));
-    entry.commits++;
-    entry.repos.set(repo, (entry.repos.get(repo) ?? 0) + 1);
+  // Each person counts once per commit, but every role they had in it is recorded
+  const tally = (people, repo) => {
+    for (const { name, email, roles } of people.values()) {
+      const key = `${name}\0${email}`;
+      let entry = state.identities.get(key);
+      if (!entry) {
+        state.identities.set(key, (entry = { name, email, commits: 0, roles: new Map(), repos: new Map() }));
+      }
+      entry.commits++;
+      entry.repos.set(repo, (entry.repos.get(repo) ?? 0) + 1);
+      for (const role of roles) entry.roles.set(role, (entry.roles.get(role) ?? 0) + 1);
+    }
   };
 
   const processRepo = async (repo) => {
@@ -84,19 +110,27 @@ export function scan(repos, { jobs = 8, signal } = {}) {
       });
       job.phase = "reading log";
       job.percent = null;
-      // NUL-separated fields, one commit per line: hash, author name/email, committer name/email
-      const log = await git(["log", "--all", "--format=%H%x00%an%x00%ae%x00%cn%x00%ce"], {
-        cwd: target,
-        signal,
-      });
-      for (const line of log.split("\n")) {
-        if (!line) continue;
-        const [hash, an, ae, cn, ce] = line.split("\0");
-        if (seen.has(hash)) continue; // same commit can appear in multiple repos
+      // NUL-separated fields, records ended by \x1e: hash, author name/email, committer name/email,
+      // then trailers separated by \x1f
+      const format = `%H%x00%an%x00%ae%x00%cn%x00%ce%x00${trailers ? "%(trailers:only,unfold,separator=%x1f)" : ""}%x1e`;
+      const log = await git(["log", "--all", `--format=${format}`], { cwd: target, signal });
+      for (const record of log.split("\x1e")) {
+        const [hash, an, ae, cn, ce, rawTrailers] = record.replace(/^\n/, "").split("\0");
+        if (!hash || seen.has(hash)) continue; // same commit can appear in multiple repos
         seen.add(hash);
         state.commits++;
-        add(an, ae, repo.name);
-        if (cn !== an || ce !== ae) add(cn, ce, repo.name);
+
+        const people = new Map();
+        const credit = (role, name, email) => {
+          const key = `${name}\0${email}`;
+          if (!people.has(key)) people.set(key, { name, email, roles: new Set() });
+          people.get(key).roles.add(role);
+        };
+        credit("author", an, ae);
+        if (cn !== an || ce !== ae) credit("committer", cn, ce);
+        if (rawTrailers)
+          for (const [role, name, email] of parseTrailers(rawTrailers, skip)) credit(role, name, email);
+        tally(people, repo.name);
       }
       remove(target);
     } catch (err) {
@@ -140,7 +174,7 @@ export function scan(repos, { jobs = 8, signal } = {}) {
 const byCount = (m) => [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
 // Collapse name+email pairs into groups keyed by email or by name.
-// `repos` becomes [[repoName, commits], ...], most commits first.
+// `roles` and `repos` become [[key, commits], ...], most commits first.
 export function group(identities, mode) {
   if (mode === "pair") {
     return identities.map((i) => ({
@@ -148,6 +182,7 @@ export function group(identities, mode) {
       names: [i.name],
       emails: [i.email],
       commits: i.commits,
+      roles: byCount(i.roles),
       repos: byCount(i.repos),
     }));
   }
@@ -156,11 +191,16 @@ export function group(identities, mode) {
   for (const i of identities) {
     const key = keyOf(i);
     let g = groups.get(key);
-    if (!g) groups.set(key, (g = { key, names: new Map(), emails: new Map(), commits: 0, repos: new Map() }));
+    if (!g)
+      groups.set(
+        key,
+        (g = { key, names: new Map(), emails: new Map(), commits: 0, roles: new Map(), repos: new Map() }),
+      );
     g.commits += i.commits;
     g.names.set(i.name, (g.names.get(i.name) ?? 0) + i.commits);
     g.emails.set(i.email, (g.emails.get(i.email) ?? 0) + i.commits);
     for (const [repo, n] of i.repos) g.repos.set(repo, (g.repos.get(repo) ?? 0) + n);
+    for (const [role, n] of i.roles) g.roles.set(role, (g.roles.get(role) ?? 0) + n);
   }
   return [...groups.values()]
     .map((g) => ({
@@ -168,6 +208,7 @@ export function group(identities, mode) {
       names: byCount(g.names).map(([k]) => k),
       emails: byCount(g.emails).map(([k]) => k),
       commits: g.commits,
+      roles: byCount(g.roles),
       repos: byCount(g.repos),
     }))
     .sort((a, b) => b.commits - a.commits || a.key.localeCompare(b.key));

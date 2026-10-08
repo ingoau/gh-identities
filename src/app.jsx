@@ -14,6 +14,10 @@ const RESULTS_CHROME = 8;
 
 const num = (n) => n.toLocaleString("en-US");
 
+const ROLE_LABELS = { author: "authored", committer: "committed" };
+const roleLabel = (role) => ROLE_LABELS[role] ?? role.replace(/-by$/, "");
+const authored = (item) => item.roles.find(([role]) => role === "author")?.[1] ?? 0;
+
 function duration(ms) {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
@@ -169,7 +173,7 @@ function Detail({ username, item, onBack }) {
   const [quitting, quit] = useQuit();
   const total = item.repos.length;
   const aliases = (item.names.length > 1 ? 1 : 0) + (item.emails.length > 1 ? 1 : 0);
-  const height = Math.max(1, Math.min(total, rows - 8 - aliases));
+  const height = Math.max(1, Math.min(total, rows - 9 - aliases));
   const offset = useScrollOffset(cursor, height, total);
   const visible = item.repos.slice(offset, offset + height);
   const top = item.repos[0]?.[1] ?? 1;
@@ -203,6 +207,16 @@ function Detail({ username, item, onBack }) {
       <Text dimColor>
         {"  "}
         {num(item.commits)} commits across {num(total)} repo{total === 1 ? "" : "s"}
+      </Text>
+      <Text wrap="truncate-end">
+        {"  "}
+        {item.roles.map(([role, n], i) => (
+          <Text key={role}>
+            {i > 0 && <Text dimColor> · </Text>}
+            <Text dimColor>{roleLabel(role)} </Text>
+            <Text color="yellow">{num(n)}</Text>
+          </Text>
+        ))}
       </Text>
       {item.names.length > 1 && (
         <Text dimColor wrap="truncate-end">
@@ -338,8 +352,9 @@ function Results({ username, result }) {
 
   const rankW = Math.max(1, String(grouped.length).length);
   const commitsW = Math.max(7, num(grouped[0]?.commits ?? 0).length);
+  const authoredW = 8;
   const reposW = 5;
-  const rest = columns - 2 - rankW - commitsW - reposW - 8;
+  const rest = columns - 2 - rankW - commitsW - authoredW - reposW - 10;
   const longestName = Math.max(4, ...visible.map((g) => g.names.join(", ").length));
   const nameW = Math.max(8, Math.min(longestName, Math.floor(rest * 0.4)));
 
@@ -383,6 +398,8 @@ function Results({ username, result }) {
           {"  "}
           {"commits".padStart(commitsW)}
           {"  "}
+          {"authored".padStart(authoredW)}
+          {"  "}
           {"repos".padStart(reposW)}
           {"  "}
         </Text>
@@ -403,6 +420,10 @@ function Results({ username, result }) {
             <Text color="yellow">
               {"  "}
               {num(g.commits).padStart(commitsW)}
+            </Text>
+            <Text color="green" dimColor={authored(g) === 0}>
+              {"  "}
+              {num(authored(g)).padStart(authoredW)}
             </Text>
             <Text color="magenta">
               {"  "}
@@ -443,7 +464,7 @@ function Results({ username, result }) {
   );
 }
 
-export default function App({ initialUsername, includeForks, jobs, signal }) {
+export default function App({ initialUsername, includeForks, scanOptions, signal }) {
   const { exit } = useApp();
   const [username, setUsername] = useState(initialUsername ?? "");
   const [phase, setPhase] = useState(initialUsername ? "fetching" : "input");
@@ -477,7 +498,7 @@ export default function App({ initialUsername, includeForks, jobs, signal }) {
           color: "green",
           text: `Found ${num(repos.length)} repos for ${username}${forks ? ` (${forks} forks skipped)` : ""}`,
         });
-        const h = scan(repos, { jobs, signal });
+        const h = scan(repos, { ...scanOptions, signal });
         setHandle(h);
         setPhase("cloning");
         return h.promise;

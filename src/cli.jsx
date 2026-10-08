@@ -8,13 +8,16 @@ import { scan } from "./scan.js";
 const HELP = `Usage: gh-identities [username] [options]
 
 Clones every public, non-fork repo of a GitHub user (bare, tree-less) and lists
-the names and emails used to commit, most used first.
+the names and emails used to commit, most used first. Commit authors, committers
+and people named in trailers like Co-authored-by or Signed-off-by are counted.
 
 Options:
-  --include-forks  Also clone forked repositories
-  -j, --jobs <n>   Repos to clone in parallel (default 8)
-  --json           Print results as JSON instead of the interactive view
-  -h, --help       Show this help
+  --include-forks        Also clone forked repositories
+  --no-trailers          Only count commit authors and committers
+  --skip-trailer <name>  Ignore one trailer, e.g. signed-off-by (repeatable)
+  -j, --jobs <n>         Repos to clone in parallel (default 8)
+  --json                 Print results as JSON instead of the interactive view
+  -h, --help             Show this help
 
 Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.`;
 
@@ -24,6 +27,8 @@ try {
     allowPositionals: true,
     options: {
       "include-forks": { type: "boolean" },
+      "no-trailers": { type: "boolean" },
+      "skip-trailer": { type: "string", multiple: true },
       jobs: { type: "string", short: "j" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -47,11 +52,17 @@ if (!Number.isInteger(jobs) || jobs < 1) {
 
 const username = positionals[0];
 const includeForks = Boolean(values["include-forks"]);
+const scanOptions = { jobs, trailers: !values["no-trailers"], skipTrailers: values["skip-trailer"] ?? [] };
 const controller = new AbortController();
 
 if (process.stdin.isTTY && process.stdout.isTTY && !values.json) {
   const app = render(
-    <App initialUsername={username} includeForks={includeForks} jobs={jobs} signal={controller.signal} />,
+    <App
+      initialUsername={username}
+      includeForks={includeForks}
+      scanOptions={scanOptions}
+      signal={controller.signal}
+    />,
     { exitOnCtrlC: false },
   );
   await app.waitUntilExit();
@@ -73,7 +84,7 @@ async function runPlain() {
     status(`Finding repos for ${username}…`);
     const all = await fetchRepos(username, { signal: controller.signal });
     const repos = includeForks ? all : all.filter((r) => !r.fork);
-    const { state, promise } = scan(repos, { jobs, signal: controller.signal });
+    const { state, promise } = scan(repos, { ...scanOptions, signal: controller.signal });
     const timer = setInterval(() => status(`Cloning ${state.done}/${state.total}`), 100);
     const result = await promise.finally(() => clearInterval(timer));
     status("");
@@ -83,6 +94,7 @@ async function runPlain() {
       name: i.name,
       email: i.email,
       commits: i.commits,
+      roles: Object.fromEntries([...i.roles].sort((a, b) => b[1] - a[1])),
       repos: Object.fromEntries([...i.repos].sort((a, b) => b[1] - a[1])),
     }));
     if (values.json) {
