@@ -4,13 +4,18 @@
   "description": "List the names and emails used to commit across all of a GitHub user's repos",
   "type": "module",
   "bin": {
-    "gh-identities": "bin/cli.js"
+    "gh-identities": "dist/cli.js"
   },
   "files": [
-    "bin"
+    "dist"
   ],
+  "scripts": {
+    "build": "esbuild src/cli.jsx --bundle --packages=external --platform=node --format=esm --target=node22 --jsx=automatic --outfile=dist/cli.js",
+    "start": "npm run build && node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "github",
@@ -28,5 +33,13 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "ink": "^8.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }
