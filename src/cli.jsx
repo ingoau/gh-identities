@@ -3,7 +3,8 @@ import { parseArgs } from "node:util";
 import { render } from "ink";
 import App from "./app.jsx";
 import { fetchRepos } from "./github.js";
-import { isNoreply, scan } from "./scan.js";
+import { isNoreply } from "./scan.js";
+import { run } from "./run.js";
 
 const HELP = `Usage: gh-identities [username] [options]
 
@@ -89,7 +90,7 @@ async function runPlain() {
     status(`Finding repos for ${username}…`);
     const all = await fetchRepos(username, { signal: controller.signal });
     const repos = includeForks ? all : all.filter((r) => !r.fork);
-    const { state, promise } = scan(repos, { ...scanOptions, signal: controller.signal });
+    const { clone: state, promise } = run(repos, { ...scanOptions, signal: controller.signal });
     const timer = setInterval(() => status(`Cloning ${state.done}/${state.total}`), 100);
     const result = await promise.finally(() => clearInterval(timer));
     status("");

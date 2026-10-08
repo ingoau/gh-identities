@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
 import TextInput from "ink-text-input";
 import { fetchRepos } from "./github.js";
-import { group, isNoreply, scan } from "./scan.js";
+import { group, isNoreply } from "./scan.js";
+import { run } from "./run.js";
 import { copy, openUrl } from "./system.js";
 
 const PAGE = 10;
@@ -101,7 +102,7 @@ function Fetching({ username, found }) {
   );
 }
 
-function Cloning({ username, state }) {
+function Cloning({ username, state, tally }) {
   const tick = useTick();
   const { columns } = useWindowSize();
   const elapsed = Date.now() - state.startedAt;
@@ -140,7 +141,7 @@ function Cloning({ username, state }) {
       </Box>
       <Box marginLeft={2}>
         <Text dimColor>
-          {num(state.commits)} commits · {num(state.identities.size)} identities
+          {num(tally.commits)} commits · {num(tally.identities.size)} identities
         </Text>
         {state.failed.length > 0 && <Text color="yellow"> · {state.failed.length} skipped</Text>}
       </Box>
@@ -178,7 +179,9 @@ function Detail({ username, item, onBack }) {
   const visible = item.repos.slice(offset, offset + height);
   const top = item.repos[0]?.[1] ?? 1;
   const commitsW = Math.max(7, num(top).length);
-  const nameW = Math.min(40, Math.max(4, ...item.repos.map(([r]) => r.length)));
+  // The user's own repos show by name, other people's as owner/repo
+  const label = (repo) => (repo.startsWith(`${username}/`) ? repo.slice(username.length + 1) : repo);
+  const nameW = Math.min(40, Math.max(4, ...item.repos.map(([r]) => label(r).length)));
   const barW = Math.max(0, Math.min(30, columns - nameW - commitsW - 10));
 
   const move = (i) => setCursor(Math.max(0, Math.min(i, total - 1)));
@@ -193,7 +196,7 @@ function Detail({ username, item, onBack }) {
     else if (key.end || input === "G") move(total - 1);
     else if (key.return || input === "o") {
       const [repo] = item.repos[cursor];
-      openUrl(`https://github.com/${username}/${repo}/commits?author=${encodeURIComponent(item.emails[0])}`);
+      openUrl(`https://github.com/${repo}/commits?author=${encodeURIComponent(item.emails[0])}`);
     }
   });
 
@@ -243,7 +246,7 @@ function Detail({ username, item, onBack }) {
             <Text>{"  "}</Text>
             <Box width={nameW} marginRight={2}>
               <Text bold={isSel} color={isSel ? "cyan" : undefined} wrap="truncate-end">
-                {repo}
+                {label(repo)}
               </Text>
             </Box>
             {barW > 0 && <Bar value={commits / top} width={barW} color="magenta" />}
@@ -510,7 +513,7 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
           color: "green",
           text: `Found ${num(repos.length)} repos for ${username}${forks ? ` (${forks} forks skipped)` : ""}`,
         });
-        const h = scan(repos, { ...scanOptions, signal });
+        const h = run(repos, { ...scanOptions, signal });
         setHandle(h);
         setPhase("cloning");
         return h.promise;
@@ -559,7 +562,9 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
         />
       )}
       {phase === "fetching" && <Fetching username={username} found={found} />}
-      {phase === "cloning" && handle && <Cloning username={username} state={handle.state} />}
+      {phase === "cloning" && handle && (
+        <Cloning username={username} state={handle.clone} tally={handle.tally} />
+      )}
       {phase === "results" && (
         <Results username={username} result={result} initialShowNoreply={showNoreply} />
       )}
