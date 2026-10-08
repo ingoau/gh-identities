@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { render } from "ink";
 import App from "./app.jsx";
 import { fetchRepos } from "./github.js";
-import { scan } from "./scan.js";
+import { isNoreply, scan } from "./scan.js";
 
 const HELP = `Usage: gh-identities [username] [options]
 
@@ -15,6 +15,8 @@ Options:
   --include-forks        Also clone forked repositories
   --no-trailers          Only count commit authors and committers
   --skip-trailer <name>  Ignore one trailer, e.g. signed-off-by (repeatable)
+  --show-noreply         Include noreply@github.com and *@users.noreply.github.com
+                         (hidden by default; press n to toggle in the results)
   -j, --jobs <n>         Repos to clone in parallel (default 8)
   --json                 Print results as JSON instead of the interactive view
   -h, --help             Show this help
@@ -29,6 +31,7 @@ try {
       "include-forks": { type: "boolean" },
       "no-trailers": { type: "boolean" },
       "skip-trailer": { type: "string", multiple: true },
+      "show-noreply": { type: "boolean" },
       jobs: { type: "string", short: "j" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -52,6 +55,7 @@ if (!Number.isInteger(jobs) || jobs < 1) {
 
 const username = positionals[0];
 const includeForks = Boolean(values["include-forks"]);
+const showNoreply = Boolean(values["show-noreply"]);
 const scanOptions = { jobs, trailers: !values["no-trailers"], skipTrailers: values["skip-trailer"] ?? [] };
 const controller = new AbortController();
 
@@ -60,6 +64,7 @@ if (process.stdin.isTTY && process.stdout.isTTY && !values.json) {
     <App
       initialUsername={username}
       includeForks={includeForks}
+      showNoreply={showNoreply}
       scanOptions={scanOptions}
       signal={controller.signal}
     />,
@@ -90,7 +95,8 @@ async function runPlain() {
     status("");
     for (const f of result.failed) console.error(`skipped ${f.repo}: ${f.error}`);
 
-    const rows = result.identities.map((i) => ({
+    const identities = showNoreply ? result.identities : result.identities.filter((i) => !isNoreply(i.email));
+    const rows = identities.map((i) => ({
       name: i.name,
       email: i.email,
       commits: i.commits,
