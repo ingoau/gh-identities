@@ -1,0 +1,32 @@
+{
+  "name": "@ingowolf/gh-identities",
+  "version": "1.0.0",
+  "description": "List the names and emails used to commit across all of a GitHub user's repos",
+  "type": "module",
+  "bin": {
+    "gh-identities": "bin/cli.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "github",
+    "git",
+    "email",
+    "commits",
+    "authors",
+    "cli"
+  ],
+  "author": "Ingo Wolf",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ingoau/gh-identities.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
