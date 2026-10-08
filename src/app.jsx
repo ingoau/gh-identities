@@ -102,7 +102,7 @@ function Fetching({ username, found }) {
   );
 }
 
-function Searching({ state, tick, barW }) {
+function Searching({ state, label, tick, barW }) {
   const done = state.finishedAt != null;
   const elapsed = (state.finishedAt ?? Date.now()) - state.startedAt;
   const { total, found } = state;
@@ -110,10 +110,10 @@ function Searching({ state, tick, barW }) {
   const eta = total && found ? (elapsed / found) * Math.max(0, total - found) : null;
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
       <Text>
         {done ? <Text color="green">✓ </Text> : <Text color="cyan">{SPINNER[tick % SPINNER.length]} </Text>}
-        {done ? "Searched" : "Searching"} commits in other repos
+        {done ? "Searched" : "Searching"} {label}
       </Text>
       <Box marginLeft={2}>
         <Bar value={ratio} width={barW} color="magenta" />
@@ -140,9 +140,31 @@ function Searching({ state, tick, barW }) {
   );
 }
 
-function Cloning({ username, state, tally, search }) {
+const progressBarWidth = (columns) => Math.max(10, Math.min(40, columns - 44));
+
+// Live view while running: the commit search (if any) above the clone scan (if any)
+function Progress({ username, handle, searchOnly }) {
   const tick = useTick();
   const { columns } = useWindowSize();
+  const barW = progressBarWidth(columns);
+  return (
+    <Box flexDirection="column" gap={1}>
+      {handle.search && (
+        <Searching
+          state={handle.search}
+          label={searchOnly ? `${username}'s commits` : "commits in other repos"}
+          tick={tick}
+          barW={barW}
+        />
+      )}
+      {handle.clone && (
+        <Cloning username={username} state={handle.clone} tally={handle.tally} tick={tick} barW={barW} />
+      )}
+    </Box>
+  );
+}
+
+function Cloning({ username, state, tally, tick, barW }) {
   const cloned = state.finishedAt != null;
   const elapsed = (state.finishedAt ?? Date.now()) - state.startedAt;
   const active = [...state.active.values()].sort((a, b) => a.startedAt - b.startedAt);
@@ -156,7 +178,6 @@ function Cloning({ username, state, tally, search }) {
     .map((j) => ((Date.now() - j.phaseStartedAt) / j.percent) * (100 - j.percent));
   const eta = progress > 0 ? Math.max((elapsed / progress) * (state.total - progress), ...jobEtas) : null;
   const nameW = Math.min(32, Math.max(12, ...active.map((j) => j.name.length)));
-  const barW = Math.max(10, Math.min(40, columns - 44));
 
   return (
     <Box flexDirection="column">
@@ -184,7 +205,6 @@ function Cloning({ username, state, tally, search }) {
         </Text>
         {state.failed.length > 0 && <Text color="yellow"> · {state.failed.length} skipped</Text>}
       </Box>
-      {search && <Searching state={search} tick={tick} barW={barW} />}
       <Box flexDirection="column" marginTop={active.length ? 1 : 0}>
         {active.map((job, i) => (
           <Box key={job.name} marginLeft={2}>
@@ -420,8 +440,11 @@ function Results({ username, result, initialShowNoreply }) {
           {"  "}
           {num(showNoreply ? result.identities.length : real.length)} identities
           {!showNoreply && hiddenCount > 0 ? ` (${num(hiddenCount)} noreply hidden)` : ""} ·{" "}
-          {num(result.commits)} commits · {num(result.repos)} repos
-          {result.search ? ` + ${num(result.search.repos)} via search` : ""} · {duration(result.duration)}
+          {num(result.commits)} commits ·{" "}
+          {result.cloneDuration == null
+            ? `${num(result.search.repos)} repos via search`
+            : `${num(result.repos)} repos${result.search ? ` + ${num(result.search.repos)} via search` : ""}`}{" "}
+          · {duration(result.duration)}
         </Text>
       </Text>
       <Text> </Text>
@@ -542,8 +565,13 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
 
   useEffect(() => {
     if (phase !== "fetching") return;
-    fetchRepos(username, { token, signal, onProgress: setFound })
+    // --search doesn't clone, so it doesn't need the repo list
+    const listRepos = scanOptions.searchOnly
+      ? Promise.resolve(null)
+      : fetchRepos(username, { token, signal, onProgress: setFound });
+    listRepos
       .then((all) => {
+        if (!all) return [];
         const repos = includeForks ? all : all.filter((r) => !r.fork);
         const forks = all.length - repos.length;
         if (!repos.length) {
@@ -554,7 +582,10 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
           color: "green",
           text: `Found ${num(repos.length)} repos for ${username}${forks ? ` (${forks} forks skipped)` : ""}`,
         });
-        if (scanOptions.inDepth && !token) {
+        return repos;
+      })
+      .then((repos) => {
+        if ((scanOptions.inDepth || scanOptions.searchOnly) && !token) {
           addLog({
             icon: "!",
             color: "yellow",
@@ -568,18 +599,24 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
       })
       .then((res) => {
         addLog(
-          {
-            icon: "✓",
-            color: "green",
-            text: `Cloned ${num(res.repos)} repos in ${duration(res.cloneDuration)}`,
-          },
+          ...(res.cloneDuration != null
+            ? [
+                {
+                  icon: "✓",
+                  color: "green",
+                  text: `Cloned ${num(res.repos)} repos in ${duration(res.cloneDuration)}`,
+                },
+              ]
+            : []),
           ...res.failed.map((f) => ({ icon: "!", color: "yellow", text: `Skipped ${f.repo}: ${f.error}` })),
           ...(res.search
             ? [
                 {
                   icon: "✓",
                   color: "green",
-                  text: `Searched ${num(res.search.found)} commits in other repos in ${duration(res.search.duration)} · ${num(res.search.added)} new across ${num(res.search.repos)} repos`,
+                  text: scanOptions.searchOnly
+                    ? `Found ${num(res.search.found)} commits across ${num(res.search.repos)} repos in ${duration(res.search.duration)}`
+                    : `Searched ${num(res.search.found)} commits in other repos in ${duration(res.search.duration)} · ${num(res.search.added)} new across ${num(res.search.repos)} repos`,
                 },
               ]
             : []),
@@ -623,7 +660,7 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
       )}
       {phase === "fetching" && <Fetching username={username} found={found} />}
       {phase === "cloning" && handle && (
-        <Cloning username={username} state={handle.clone} tally={handle.tally} search={handle.search} />
+        <Progress username={username} handle={handle} searchOnly={scanOptions.searchOnly} />
       )}
       {phase === "results" && (
         <Results username={username} result={result} initialShowNoreply={showNoreply} />

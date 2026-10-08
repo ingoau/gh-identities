@@ -3,14 +3,16 @@ import { searchCommits } from "./search.js";
 
 // Runs the clone scan and, with `inDepth`, a commit search over repos the user doesn't own.
 // Search results are merged once both finish, so commits the clone scan already counted are skipped.
+// `searchOnly` skips cloning and searches every repo instead.
 // Returns live state for the UI plus a promise of the final result.
-export function run(repos, { username, inDepth, token, jobs, signal, trailers, skipTrailers }) {
+export function run(repos, { username, inDepth, searchOnly, token, jobs, signal, trailers, skipTrailers }) {
   const startedAt = Date.now();
   const tally = createTally({ trailers, skipTrailers });
-  const clone = scan(repos, { tally, jobs, signal });
-  const search = inDepth ? searchCommits(username, { token, signal }) : null;
+  const clone = searchOnly ? null : scan(repos, { tally, jobs, signal });
+  const search =
+    inDepth || searchOnly ? searchCommits(username, { token, signal, excludeOwn: !searchOnly }) : null;
 
-  const promise = Promise.all([clone.promise, search?.promise]).then(([cloned, searched]) => {
+  const promise = Promise.all([clone?.promise, search?.promise]).then(([cloned, searched]) => {
     let summary = null;
     if (searched) {
       const added = searched.commits.filter((c) => tally.add(c));
@@ -23,14 +25,14 @@ export function run(repos, { username, inDepth, token, jobs, signal, trailers, s
       };
     }
     return {
-      repos: cloned.repos,
-      failed: cloned.failed,
-      cloneDuration: cloned.duration,
+      repos: cloned?.repos ?? 0,
+      failed: cloned?.failed ?? [],
+      cloneDuration: cloned?.duration ?? null,
       identities: tally.sorted(),
       commits: tally.commits,
       search: summary,
       duration: Date.now() - startedAt,
     };
   });
-  return { tally, clone: clone.state, search: search?.state, promise };
+  return { tally, clone: clone?.state, search: search?.state, promise };
 }

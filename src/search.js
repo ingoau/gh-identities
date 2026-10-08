@@ -31,12 +31,13 @@ function resetTime(res) {
   return Date.now() + 60_000;
 }
 
-// Finds commits authored by `username` in repos they don't own, using the commit search API.
+// Finds commits authored by `username` using the commit search API; with `excludeOwn`, only in repos
+// they don't own (those are covered by cloning).
 // Search stops at 1,000 results per query, so results are sorted newest first and, after each
 // 1,000, the query is repeated for commits at or before the last author date seen.
 // `state` is mutated live for the UI; `promise` resolves with { commits, error } and only
 // rejects when aborted, so a failed search still returns what it found.
-export function searchCommits(username, { token, signal } = {}) {
+export function searchCommits(username, { token, signal, excludeOwn = true } = {}) {
   const state = { total: null, found: 0, waitingUntil: null, startedAt: Date.now(), finishedAt: null };
   const commits = new Map();
   // total_count counts a commit once per repo it's in, so progress is measured in (commit, repo) results
@@ -80,7 +81,7 @@ export function searchCommits(username, { token, signal } = {}) {
     throw new Error("GitHub search kept failing; giving up");
   };
 
-  const base = `author:${username} -user:${username}`;
+  const base = excludeOwn ? `author:${username} -user:${username}` : `author:${username}`;
   const promise = (async () => {
     let error = null;
     try {

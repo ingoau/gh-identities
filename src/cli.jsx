@@ -17,6 +17,9 @@ Options:
   --in-depth             Also search GitHub for the user's commits in repos they
                          don't own (slow: paced by the search rate limit; use a
                          token). Commits only in the user's forks aren't searched.
+  --search               Only search GitHub for the user's commits, without cloning
+                         (finds only commits linked to their account, on default
+                         branches)
   --no-trailers          Only count commit authors and committers
   --skip-trailer <name>  Ignore one trailer, e.g. signed-off-by (repeatable)
   --show-noreply         Include noreply@github.com and *@users.noreply.github.com
@@ -37,6 +40,7 @@ try {
     options: {
       "include-forks": { type: "boolean" },
       "in-depth": { type: "boolean" },
+      search: { type: "boolean" },
       "no-trailers": { type: "boolean" },
       "skip-trailer": { type: "string", multiple: true },
       "show-noreply": { type: "boolean" },
@@ -79,6 +83,7 @@ const includeForks = Boolean(values["include-forks"]);
 const showNoreply = Boolean(values["show-noreply"]);
 const scanOptions = {
   inDepth: Boolean(values["in-depth"]),
+  searchOnly: Boolean(values.search),
   jobs,
   trailers: !values["no-trailers"],
   skipTrailers: values["skip-trailer"] ?? [],
@@ -113,10 +118,14 @@ async function runPlain() {
   const status = (msg) => process.stderr.isTTY && process.stderr.write(`\r\x1b[2K${msg}`);
 
   try {
-    status(`Finding repos for ${username}…`);
-    const all = await fetchRepos(username, { token, signal: controller.signal });
-    const repos = includeForks ? all : all.filter((r) => !r.fork);
-    if (scanOptions.inDepth && !token) {
+    let repos = [];
+    // --search doesn't clone, so it doesn't need the repo list
+    if (!scanOptions.searchOnly) {
+      status(`Finding repos for ${username}…`);
+      const all = await fetchRepos(username, { token, signal: controller.signal });
+      repos = includeForks ? all : all.filter((r) => !r.fork);
+    }
+    if ((scanOptions.inDepth || scanOptions.searchOnly) && !token) {
       console.error("No GitHub token: search is limited to 10 requests a minute (use --gh-auth or --token)");
     }
     const { clone, search, promise } = run(repos, {
@@ -126,13 +135,15 @@ async function runPlain() {
       signal: controller.signal,
     });
     const timer = setInterval(() => {
-      let msg = `Cloning ${clone.done}/${clone.total}`;
+      const parts = [];
+      if (clone) parts.push(`Cloning ${clone.done}/${clone.total}`);
       if (search) {
-        msg += ` · searching ${search.found}/${search.total ?? "?"}`;
+        let msg = `Searching ${search.found}/${search.total ?? "?"}`;
         if (search.waitingUntil)
           msg += ` (rate limited, ${Math.ceil((search.waitingUntil - Date.now()) / 1000)}s)`;
+        parts.push(msg);
       }
-      status(msg);
+      status(parts.join(" · "));
     }, 100);
     const result = await promise.finally(() => clearInterval(timer));
     status("");
