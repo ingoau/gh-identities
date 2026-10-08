@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { render } from "ink";
 import App from "./app.jsx";
-import { fetchRepos } from "./github.js";
+import { fetchRepos, ghCliToken } from "./github.js";
 import { isNoreply } from "./scan.js";
 import { run } from "./run.js";
 
@@ -18,11 +18,14 @@ Options:
   --skip-trailer <name>  Ignore one trailer, e.g. signed-off-by (repeatable)
   --show-noreply         Include noreply@github.com and *@users.noreply.github.com
                          (hidden by default; press n to toggle in the results)
+  --gh-auth              Use the GitHub CLI's token (gh auth token)
+  --token <token>        Use this GitHub token
   -j, --jobs <n>         Repos to clone in parallel (default 8)
   --json                 Print results as JSON instead of the interactive view
   -h, --help             Show this help
 
-Set GITHUB_TOKEN (or GH_TOKEN) to raise the GitHub API rate limit.`;
+A token raises the GitHub API rate limit. Without --gh-auth or --token,
+GITHUB_TOKEN or GH_TOKEN is used if set.`;
 
 let parsed;
 try {
@@ -33,6 +36,8 @@ try {
       "no-trailers": { type: "boolean" },
       "skip-trailer": { type: "string", multiple: true },
       "show-noreply": { type: "boolean" },
+      "gh-auth": { type: "boolean" },
+      token: { type: "string" },
       jobs: { type: "string", short: "j" },
       json: { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -54,6 +59,17 @@ if (!Number.isInteger(jobs) || jobs < 1) {
   process.exit(2);
 }
 
+let token = values.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || null;
+if (values["gh-auth"]) {
+  token = ghCliToken();
+  if (!token) {
+    console.error(
+      "--gh-auth: couldn't get a token from the GitHub CLI. Is gh installed and logged in (gh auth login)?",
+    );
+    process.exit(2);
+  }
+}
+
 const username = positionals[0];
 const includeForks = Boolean(values["include-forks"]);
 const showNoreply = Boolean(values["show-noreply"]);
@@ -67,6 +83,7 @@ if (process.stdin.isTTY && process.stdout.isTTY && !values.json) {
       includeForks={includeForks}
       showNoreply={showNoreply}
       scanOptions={scanOptions}
+      token={token}
       signal={controller.signal}
     />,
     { exitOnCtrlC: false },
@@ -88,7 +105,7 @@ async function runPlain() {
 
   try {
     status(`Finding repos for ${username}…`);
-    const all = await fetchRepos(username, { signal: controller.signal });
+    const all = await fetchRepos(username, { token, signal: controller.signal });
     const repos = includeForks ? all : all.filter((r) => !r.fork);
     const { clone: state, promise } = run(repos, { ...scanOptions, signal: controller.signal });
     const timer = setInterval(() => status(`Cloning ${state.done}/${state.total}`), 100);

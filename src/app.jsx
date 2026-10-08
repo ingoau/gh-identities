@@ -479,7 +479,7 @@ function Results({ username, result, initialShowNoreply }) {
   );
 }
 
-export default function App({ initialUsername, includeForks, showNoreply, scanOptions, signal }) {
+export default function App({ initialUsername, includeForks, showNoreply, scanOptions, token, signal }) {
   const { exit } = useApp();
   const [username, setUsername] = useState(initialUsername ?? "");
   const [phase, setPhase] = useState(initialUsername ? "fetching" : "input");
@@ -501,7 +501,7 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
 
   useEffect(() => {
     if (phase !== "fetching") return;
-    fetchRepos(username, { signal, onProgress: setFound })
+    fetchRepos(username, { token, signal, onProgress: setFound })
       .then((all) => {
         const repos = includeForks ? all : all.filter((r) => !r.fork);
         const forks = all.length - repos.length;
