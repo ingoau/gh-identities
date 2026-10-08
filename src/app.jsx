@@ -102,10 +102,49 @@ function Fetching({ username, found }) {
   );
 }
 
-function Cloning({ username, state, tally }) {
+function Searching({ state, tick, barW }) {
+  const done = state.finishedAt != null;
+  const elapsed = (state.finishedAt ?? Date.now()) - state.startedAt;
+  const { total, found } = state;
+  const ratio = total ? Math.min(1, found / total) : done ? 1 : 0;
+  const eta = total && found ? (elapsed / found) * Math.max(0, total - found) : null;
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        {done ? <Text color="green">✓ </Text> : <Text color="cyan">{SPINNER[tick % SPINNER.length]} </Text>}
+        {done ? "Searched" : "Searching"} commits in other repos
+      </Text>
+      <Box marginLeft={2}>
+        <Bar value={ratio} width={barW} color="magenta" />
+        <Text>
+          {"  "}
+          <Text bold>{num(found)}</Text>
+          <Text dimColor>/{total == null ? "?" : num(total)}</Text>
+          {"  "}
+          {String(Math.floor(ratio * 100)).padStart(3)}%{"  "}
+          <Text dimColor>
+            {duration(elapsed)}
+            {!done && eta != null ? ` · ~${duration(eta)} left` : ""}
+          </Text>
+        </Text>
+      </Box>
+      {state.waitingUntil && (
+        <Box marginLeft={2}>
+          <Text color="yellow">
+            ⏸ rate limited by GitHub · resuming in {duration(Math.max(0, state.waitingUntil - Date.now()))}
+          </Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function Cloning({ username, state, tally, search }) {
   const tick = useTick();
   const { columns } = useWindowSize();
-  const elapsed = Date.now() - state.startedAt;
+  const cloned = state.finishedAt != null;
+  const elapsed = (state.finishedAt ?? Date.now()) - state.startedAt;
   const active = [...state.active.values()].sort((a, b) => a.startedAt - b.startedAt);
   // Count in-flight downloads fractionally so the bar and ETA move while a big repo is cloning
   const partial = active.reduce((sum, j) => sum + (j.phase === "receiving" ? j.percent / 100 : 0), 0);
@@ -122,8 +161,8 @@ function Cloning({ username, state, tally }) {
   return (
     <Box flexDirection="column">
       <Text>
-        <Text color="cyan">{SPINNER[tick % SPINNER.length]} </Text>
-        Cloning <Text bold>{username}</Text>'s repos
+        {cloned ? <Text color="green">✓ </Text> : <Text color="cyan">{SPINNER[tick % SPINNER.length]} </Text>}
+        {cloned ? "Cloned" : "Cloning"} <Text bold>{username}</Text>'s repos
       </Text>
       <Box marginLeft={2}>
         <Bar value={ratio} width={barW} />
@@ -145,7 +184,8 @@ function Cloning({ username, state, tally }) {
         </Text>
         {state.failed.length > 0 && <Text color="yellow"> · {state.failed.length} skipped</Text>}
       </Box>
-      <Box flexDirection="column" marginTop={1}>
+      {search && <Searching state={search} tick={tick} barW={barW} />}
+      <Box flexDirection="column" marginTop={active.length ? 1 : 0}>
         {active.map((job, i) => (
           <Box key={job.name} marginLeft={2}>
             <Text color="cyan">{SPINNER[(tick + i * 3) % SPINNER.length]} </Text>
@@ -380,7 +420,8 @@ function Results({ username, result, initialShowNoreply }) {
           {"  "}
           {num(showNoreply ? result.identities.length : real.length)} identities
           {!showNoreply && hiddenCount > 0 ? ` (${num(hiddenCount)} noreply hidden)` : ""} ·{" "}
-          {num(result.commits)} commits · {num(result.repos)} repos · {duration(result.duration)}
+          {num(result.commits)} commits · {num(result.repos)} repos
+          {result.search ? ` + ${num(result.search.repos)} via search` : ""} · {duration(result.duration)}
         </Text>
       </Text>
       <Text> </Text>
@@ -513,7 +554,14 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
           color: "green",
           text: `Found ${num(repos.length)} repos for ${username}${forks ? ` (${forks} forks skipped)` : ""}`,
         });
-        const h = run(repos, { ...scanOptions, signal });
+        if (scanOptions.inDepth && !token) {
+          addLog({
+            icon: "!",
+            color: "yellow",
+            text: "No GitHub token: search is limited to 10 requests a minute (use --gh-auth or --token)",
+          });
+        }
+        const h = run(repos, { ...scanOptions, username, token, signal });
         setHandle(h);
         setPhase("cloning");
         return h.promise;
@@ -523,9 +571,21 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
           {
             icon: "✓",
             color: "green",
-            text: `Cloned ${num(res.repos)} repos in ${duration(res.duration)} · ${num(res.commits)} commits`,
+            text: `Cloned ${num(res.repos)} repos in ${duration(res.cloneDuration)}`,
           },
           ...res.failed.map((f) => ({ icon: "!", color: "yellow", text: `Skipped ${f.repo}: ${f.error}` })),
+          ...(res.search
+            ? [
+                {
+                  icon: "✓",
+                  color: "green",
+                  text: `Searched ${num(res.search.found)} commits in other repos in ${duration(res.search.duration)} · ${num(res.search.added)} new across ${num(res.search.repos)} repos`,
+                },
+              ]
+            : []),
+          ...(res.search?.error
+            ? [{ icon: "!", color: "yellow", text: `Search stopped early: ${res.search.error}` }]
+            : []),
         );
         setResult(res);
         setPhase(res.identities.length ? "results" : "empty");
@@ -563,7 +623,7 @@ export default function App({ initialUsername, includeForks, showNoreply, scanOp
       )}
       {phase === "fetching" && <Fetching username={username} found={found} />}
       {phase === "cloning" && handle && (
-        <Cloning username={username} state={handle.clone} tally={handle.tally} />
+        <Cloning username={username} state={handle.clone} tally={handle.tally} search={handle.search} />
       )}
       {phase === "results" && (
         <Results username={username} result={result} initialShowNoreply={showNoreply} />

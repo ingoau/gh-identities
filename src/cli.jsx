@@ -14,6 +14,9 @@ and people named in trailers like Co-authored-by or Signed-off-by are counted.
 
 Options:
   --include-forks        Also clone forked repositories
+  --in-depth             Also search GitHub for the user's commits in repos they
+                         don't own (slow: paced by the search rate limit; use a
+                         token). Commits only in the user's forks aren't searched.
   --no-trailers          Only count commit authors and committers
   --skip-trailer <name>  Ignore one trailer, e.g. signed-off-by (repeatable)
   --show-noreply         Include noreply@github.com and *@users.noreply.github.com
@@ -33,6 +36,7 @@ try {
     allowPositionals: true,
     options: {
       "include-forks": { type: "boolean" },
+      "in-depth": { type: "boolean" },
       "no-trailers": { type: "boolean" },
       "skip-trailer": { type: "string", multiple: true },
       "show-noreply": { type: "boolean" },
@@ -73,7 +77,12 @@ if (values["gh-auth"]) {
 const username = positionals[0];
 const includeForks = Boolean(values["include-forks"]);
 const showNoreply = Boolean(values["show-noreply"]);
-const scanOptions = { jobs, trailers: !values["no-trailers"], skipTrailers: values["skip-trailer"] ?? [] };
+const scanOptions = {
+  inDepth: Boolean(values["in-depth"]),
+  jobs,
+  trailers: !values["no-trailers"],
+  skipTrailers: values["skip-trailer"] ?? [],
+};
 const controller = new AbortController();
 
 if (process.stdin.isTTY && process.stdout.isTTY && !values.json) {
@@ -107,11 +116,28 @@ async function runPlain() {
     status(`Finding repos for ${username}…`);
     const all = await fetchRepos(username, { token, signal: controller.signal });
     const repos = includeForks ? all : all.filter((r) => !r.fork);
-    const { clone: state, promise } = run(repos, { ...scanOptions, signal: controller.signal });
-    const timer = setInterval(() => status(`Cloning ${state.done}/${state.total}`), 100);
+    if (scanOptions.inDepth && !token) {
+      console.error("No GitHub token: search is limited to 10 requests a minute (use --gh-auth or --token)");
+    }
+    const { clone, search, promise } = run(repos, {
+      ...scanOptions,
+      username,
+      token,
+      signal: controller.signal,
+    });
+    const timer = setInterval(() => {
+      let msg = `Cloning ${clone.done}/${clone.total}`;
+      if (search) {
+        msg += ` · searching ${search.found}/${search.total ?? "?"}`;
+        if (search.waitingUntil)
+          msg += ` (rate limited, ${Math.ceil((search.waitingUntil - Date.now()) / 1000)}s)`;
+      }
+      status(msg);
+    }, 100);
     const result = await promise.finally(() => clearInterval(timer));
     status("");
     for (const f of result.failed) console.error(`skipped ${f.repo}: ${f.error}`);
+    if (result.search?.error) console.error(`search stopped early: ${result.search.error}`);
 
     const identities = showNoreply ? result.identities : result.identities.filter((i) => !isNoreply(i.email));
     const rows = identities.map((i) => ({
